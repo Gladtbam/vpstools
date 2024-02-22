@@ -1,1 +1,1 @@
-# vpstools
+安装操作系统后配置 Nginx 的脚本
