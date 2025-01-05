@@ -12,31 +12,50 @@ if [ $EUID -ne 0 ]; then
 fi
 
 if [ -n $2 ]; then
-    domain=$2
-    echo $domain
+    dns=$2
+else
+    echo -e "${RED}请输入DNS API${NC}"
+    exit 1
+fi
+
+if [ -n $3 ]; then
+    domain=("${@:3}")
+    server_name=${@:3}
+    for i in ${domain[@]}; do
+        if [[ $i =~ ^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$ ]]; then
+            echo -e "${GREEN}域名: $i${NC}"
+            acme_domain="$acme_domain -d $i"
+        else
+            echo -e "${RED}域名: $i 格式错误${NC}"
+            exit 1
+        fi
+    done
+else
+    echo -e "${RED}请输入域名${NC}"
+    exit 1
 fi
 
 AddSite() {
-    if [ -f /etc/nginx/sites-available/$domain ]; then
+    if [ -f /etc/nginx/sites-available/${domain[0]} ]; then
         echo -e "${RED}域名已存在${NC}"
         exit 1
     fi
 
-    if [ -z $domain ]; then
+    if [ -z ${domain[0]} ]; then
         echo -e "${RED}请输入域名${NC}"
         exit 1
     fi
 
-    mkdir -p /var/www/$domain
-    chown -R www-data:www-data /var/www/$domain
-    chmod -R 755 /var/www/$domain
+    mkdir -p /var/www/${domain[0]}
+    chown -R www-data:www-data /var/www/${domain[0]}
+    chmod -R 755 /var/www/${domain[0]}
 
     echo "\
 server {
     listen 80;
     # listen [::]:80;
-    server_name $domain;
-    root /var/www/$domain;
+    server_name ${server_name};
+    root /var/www/${domain[0]};
     index index.html index.htm index.php;
 
     location / {
@@ -47,17 +66,17 @@ server {
         allow all;
     }
 
-    access_log /var/log/nginx/$domain.access.log;
-}" > /etc/nginx/sites-available/$domain
+    access_log /var/log/nginx/${domain[0]}.access.log;
+}" > /etc/nginx/sites-available/${domain[0]}
 
-    ln -s /etc/nginx/sites-available/$domain /etc/nginx/sites-enabled/$domain
+    ln -s /etc/nginx/sites-available/${domain[0]} /etc/nginx/sites-enabled/${domain[0]}
 
     if nginx -t; then
         nginx -s reload
     else
-        rm /etc/nginx/sites-enabled/$domain
-        rm /etc/nginx/sites-available/$domain
-        rm -rf /var/www/$domain
+        rm /etc/nginx/sites-enabled/${domain[0]}
+        rm /etc/nginx/sites-available/${domain[0]}
+        rm -rf /var/www/${domain[0]}
         echo -e "${RED}nginx HTTP 配置错误${NC}"
         exit 1
     fi
@@ -66,24 +85,53 @@ server {
 }
 
 AddSSL() {
-    "/usr/local/bin/acme.sh"/acme.sh --issue -d $domain --webroot /var/www/$domain -w /var/www/html
+    if [ $dns == "webroot" ]; then
+        "/usr/local/bin/acme.sh"/acme.sh --issue $acme_domain --webroot /var/www/${domain[0]} -w /var/www/html
+    else
+        "/usr/local/bin/acme.sh"/acme.sh --issue --dns $dns $acme_domain
+    fi
+
+    if [ $? -eq 0 ]; then
+        mkdir -p /etc/nginx/ssl/${domain[0]}
+        "/usr/local/bin/acme.sh"/acme.sh --install-cert -d ${domain[0]} \
+            --fullchain-file /etc/nginx/ssl/${domain[0]}/fullchain.cer \
+            --key-file /etc/nginx/ssl/${domain[0]}/${domain[0]}.key \
+            --ca-file /etc/nginx/ssl/${domain[0]}/ca.cer \
+            --reloadcmd "systemctl reload nginx"
+    else
+        echo -e "${RED}证书申请失败${NC}"
+        rm /etc/nginx/sites-enabled/$domain
+        rm /etc/nginx/sites-available/$domain
+        rm -rf /var/www/$domain
+        exit 1
+    fi
 
     if [ $? -eq 0 ]; then
         echo "\
 server {
-    listen 443 ssl http2;
-    # listen [::]:443 ssl http2;
-    server_name $domain;
-    root /var/www/$domain;
+    listen 443 ssl;
+    # listen [::]:443 ssl;
+    http2 on;
+    server_name ${server_name};
+    root /var/www/${domain[0]};
     index index.html index.htm index.php;
 
-    ssl_certificate /etc/nginx/ssl/${domain}_ecc/fullchain.cer;
-    ssl_certificate_key /etc/nginx/ssl/${domain}_ecc/${domain}.key;
-    ssl_trusted_certificate /etc/nginx/ssl/${domain}_ecc/ca.cer;
-    ssl_session_timeout 5m;
+    ssl_certificate /etc/nginx/ssl/${domain[0]}/fullchain.cer;
+    ssl_certificate_key /etc/nginx/ssl/${domain[0]}/${domain[0]}.key;
+    ssl_trusted_certificate /etc/nginx/ssl/${domain[0]}/ca.cer;
+
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers 'TLS13+AESGCM+AES128:TLS13+AESGCM+AES256:TLS13+CHACHA20:TLS13+AES128+CCM:TLS13+AES256+CCM:TLS13+AES128+CCM8:TLS13+AES256+CCM8:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-CCM-SHA256:ECDHE-ECDSA-AES256-CCM-SHA384:ECDHE-ECDSA-AES128-CCM8-SHA256:ECDHE-ECDSA-AES256-CCM8-SHA256:ECDHE-RSA-AES128-CCM-SHA256:ECDHE-RSA-AES256-CCM-SHA384:ECDHE-RSA-AES128-CCM8-SHA256:ECDHE-RSA-AES256-CCM8-SHA256';
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers on;
+
+    ssl_session_timeout 1d;
     ssl_session_cache shared:SSL:10m;
+    ssl_session_tickets off;
+    
+    ssl_stapling on;
+    ssl_stapling_verify on;
+
+    add_header Strict-Transport-Security 'max-age=31536000; includeSubDomains; preload' always;
 
     ssl_dhparam /etc/nginx/ssl/dhparam.pem;
 
@@ -91,35 +139,41 @@ server {
         allow all;
     }
 
-    access_log /var/log/nginx/$domain.access.log;
-}" >> /etc/nginx/sites-available/$domain
+    access_log /var/log/nginx/${domain[0]}.access.log;
+}" >> /etc/nginx/sites-available/${domain[0]}
     else
-        echo -e "${RED}证书申请失败${NC}"
-        rm /etc/nginx/sites-enabled/$domain
-        rm /etc/nginx/sites-available/$domain
-        rm -rf /var/www/$domain
-        rm -rf /etc/nginx/ssl/${domain}_ecc
+        echo -e "${RED}安装证书失败${NC}"
+        echo -e "${RED}请手动安装证书${NC}"
+        echo -e "acme.sh --install-cert -d ${domain[0]} \
+            --fullchain-file /etc/nginx/ssl/${domain[0]}/fullchain.cer \
+            --key-file /etc/nginx/ssl/${domain[0]}/${domain[0]}.key \
+            --ca-file /etc/nginx/ssl/${domain[0]}/ca.cer \
+            --reloadcmd \"systemctl reload nginx\""
         exit 1
     fi
 
     if nginx -t; then
         nginx -s reload
     else
-        rm /etc/nginx/sites-enabled/$domain
-        rm /etc/nginx/sites-available/$domain
-        rm -rf /var/www/$domain
-        rm -rf /etc/nginx/ssl/${domain}_ecc
         echo -e "${RED}nginx HTTPS 配置错误${NC}"
         exit 1
     fi
 }
 
 removesite() {
-    if [ -f /etc/nginx/sites-available/$domain ]; then
-        if [ -f /etc/nginx/sites-enabled/$domain ]; then
-            rm /etc/nginx/sites-enabled/$domain
+    if [ -f /etc/nginx/sites-available/${domain[0]} ]; then
+        if [ -f /etc/nginx/sites-enabled/${domain[0]} ]; then
+            "/usr/local/bin/acme.sh"/acme.sh --revoke -d ${domain[0]}
+            if [ $? -eq 0 ]; then
+                rm /etc/nginx/sites-enabled/${domain[0]}
+                rm -rf /etc/nginx/ssl/${domain[0]}
+            else
+                echo -e "${RED}证书删除失败${NC}"
+                echo -e "${YELLOW}取消删除站点${NC}"
+                exit 1
+            fi
         fi
-        rm /etc/nginx/sites-available/$domain
+        rm /etc/nginx/sites-available/${domain[0]}
         nginx -s reload
     else
         echo -e "${RED}站点不存在${NC}"
@@ -137,8 +191,8 @@ listsiteall() {
 }
 
 enablesite() {
-    if [ -f /etc/nginx/sites-available/$domain ]; then
-        ln -s /etc/nginx/sites-available/$domain /etc/nginx/sites-enabled/$domain
+    if [ -f /etc/nginx/sites-available/${domain[0]} ]; then
+        ln -s /etc/nginx/sites-available/${domain[0]} /etc/nginx/sites-enabled/${domain[0]}
         nginx -s reload
     else
         echo -e "${RED}站点不存在${NC}"
@@ -147,8 +201,8 @@ enablesite() {
 }
 
 disablesite() {
-    if [ -f /etc/nginx/sites-enabled/$domain ]; then
-        rm /etc/nginx/sites-enabled/$domain
+    if [ -f /etc/nginx/sites-enabled/${domain[0]} ]; then
+        rm /etc/nginx/sites-enabled/${domain[0]}
         nginx -s reload
     else
         echo -e "${RED}站点不存在或未启用${NC}"
