@@ -11,30 +11,6 @@ if [ $EUID -ne 0 ]; then
     exit 1
 fi
 
-if [ -n $2 ]; then
-    dns=$2
-else
-    echo -e "${RED}请输入DNS API${NC}"
-    exit 1
-fi
-
-if [ -n $3 ]; then
-    domain=("${@:3}")
-    server_name=${@:3}
-    for i in ${domain[@]}; do
-        if [[ $i =~ ^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$ ]]; then
-            echo -e "${GREEN}域名: $i${NC}"
-            acme_domain="$acme_domain -d $i"
-        else
-            echo -e "${RED}域名: $i 格式错误${NC}"
-            exit 1
-        fi
-    done
-else
-    echo -e "${RED}请输入域名${NC}"
-    exit 1
-fi
-
 AddSite() {
     if [ -f /etc/nginx/sites-available/${domain[0]} ]; then
         echo -e "${RED}域名已存在${NC}"
@@ -144,11 +120,11 @@ server {
     else
         echo -e "${RED}安装证书失败${NC}"
         echo -e "${RED}请手动安装证书${NC}"
-        echo -e "acme.sh --install-cert -d ${domain[0]} \
-            --fullchain-file /etc/nginx/ssl/${domain[0]}/fullchain.cer \
-            --key-file /etc/nginx/ssl/${domain[0]}/${domain[0]}.key \
-            --ca-file /etc/nginx/ssl/${domain[0]}/ca.cer \
-            --reloadcmd \"systemctl reload nginx\""
+        echo -e "acme.sh --install-cert -d ${domain[0]}
+--fullchain-file /etc/nginx/ssl/${domain[0]}/fullchain.cer
+--key-file /etc/nginx/ssl/${domain[0]}/${domain[0]}.key
+--ca-file /etc/nginx/ssl/${domain[0]}/ca.cer
+--reloadcmd \"systemctl reload nginx\""
         exit 1
     fi
 
@@ -209,6 +185,75 @@ disablesite() {
         exit 1
     fi
 }
+
+Install_ACME() {
+    read -p "请输入邮箱地址：" email
+    if [ ! -f /etc/nginx/ssl ]; then
+        mkdir -p /etc/nginx/ssl && cd $_
+        time openssl dhparam -rand /dev/random -out dhparam.pem 4096
+    fi
+
+    git clone --depth 1 https://github.com/acmesh-official/acme.sh.git /tmp/acme.sh
+    /tmp/acme.sh/acme.sh --install --home /usr/local/acme.sh --accountemail $email
+    # source ~/.bashrc
+    ln -s /usr/local/acme.sh/acme.sh /usr/local/bin/acme.sh
+    if acme.sh -v>/dev/null; then
+        echo -e "${GREEN}acme.sh 安装成功${NC}"
+        rm -rf /tmp/acme.sh
+        acme.sh --upgrade --auto-upgrade
+        acme.sh --set-default-ca --server letsencrypt
+    else
+        echo -e "${RED}acme.sh 安装失败${NC}"
+        exit 1
+    fi
+}
+
+if [ -n $2 ]; then
+    dns=$2
+else
+    echo -e "${RED}请输入DNS API${NC}"
+    exit 1
+fi
+# 检测 acme.sh 安装
+if acme.sh -v>/dev/null; then
+    true
+else
+    echo -e "${RED}acme.sh 未安装${NC}
+${YELLOW}是否安装 acme.sh? (y/n)${NC}"
+    read -r install
+    if [ $install == "y" ]; then
+        Install_ACME
+        source ~/.bashrc
+    else
+        exit 1
+    fi
+fi
+
+# 检测 Nginx 安装
+if nginx -v>/dev/null; then
+    true
+else
+    echo -e "${RED}Nginx 未安装${NC}"
+    exit 1
+fi
+
+if [ -n $3 ]; then
+    domain=("${@:3}")
+    server_name=${@:3}
+    for i in ${domain[@]}; do
+        if [[ $i =~ ^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$ ]]; then
+            echo -e "${GREEN}域名: $i${NC}"
+            acme_domain="$acme_domain -d $i"
+        else
+            echo -e "${RED}域名: $i 格式错误${NC}"
+            exit 1
+        fi
+    done
+else
+    echo -e "${RED}请输入域名${NC}"
+    exit 1
+fi
+
 case $1 in
     list)
         listsite
@@ -230,7 +275,7 @@ case $1 in
         ;;
     *)
         echo -e "${RED}Usage: $0 {list|listall}${NC}"
-        echo -e "${RED}Usage: $0 {add|remove|enable|disable} domain${NC}"
+        echo -e "${RED}Usage: $0 {add|remove|enable|disable} {dns} {domain}${NC}"
         exit 1
         ;;
 esac
